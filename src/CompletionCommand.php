@@ -2,6 +2,9 @@
 
 namespace Stecman\Component\Symfony\Console\BashCompletion;
 
+use Stecman\Component\Symfony\Console\BashCompletion\HookFactories\BashHookFactory;
+use Stecman\Component\Symfony\Console\BashCompletion\HookFactories\FishHookFactory;
+use Stecman\Component\Symfony\Console\BashCompletion\HookFactories\ZshHookFactory;
 use Symfony\Component\Console\Command\Command as SymfonyCommand;
 use Symfony\Component\Console\Input\InputDefinition;
 use Symfony\Component\Console\Input\InputInterface;
@@ -14,31 +17,6 @@ class CompletionCommand extends SymfonyCommand
      * @var CompletionHandler
      */
     protected $handler;
-
-    protected function configure()
-    {
-        $this
-            ->setName('_completion')
-            ->setDefinition($this->createDefinition())
-            ->setDescription('BASH completion hook.')
-            ->setHelp(<<<END
-To enable BASH completion, run:
-
-    <comment>eval `[program] _completion -g`</comment>.
-
-Or for an alias:
-
-    <comment>eval `[program] _completion -g -p [alias]`</comment>.
-
-END
-            );
-
-        // Hide this command from listing if supported
-        // Command::setHidden() was not available before Symfony 3.2.0
-        if (method_exists($this, 'setHidden')) {
-            $this->setHidden(true);
-        }
-    }
 
     /**
      * {@inheritdoc}
@@ -53,6 +31,8 @@ END
      *
      * Any global options defined by user-code are meaningless to this command.
      * Options outside of the core defaults are ignored to avoid name and shortcut conflicts.
+     *
+     * @param bool $mergeArgs
      */
     public function mergeApplicationDefinition($mergeArgs = true)
     {
@@ -72,14 +52,43 @@ END
     }
 
     /**
+     * @inheritDoc
+     */
+    protected function configure()
+    {
+        $this
+            ->setName('_completion')
+            ->setDefinition($this->createDefinition())
+            ->setDescription('Shell completion hook.')
+            ->setHelp(<<<END
+To enable shell completion, run:
+
+    <comment>eval `[program] _completion -g`</comment>.
+
+Or for an alias:
+
+    <comment>eval `[program] _completion -g -p [alias]`</comment>.
+
+END
+            );
+
+        // Hide this command from listing if supported
+        // Command::setHidden() was not available before Symfony 3.2.0
+        if (method_exists($this, 'setHidden')) {
+            $this->setHidden(true);
+        }
+    }
+
+    /**
      * Reduce the passed list of options to the core defaults (if they exist)
      *
      * @param InputOption[] $appOptions
+     *
      * @return InputOption[]
      */
     protected function filterApplicationOptions(array $appOptions)
     {
-        return array_filter($appOptions, function(InputOption $option) {
+        return array_filter($appOptions, function (InputOption $option) {
             static $coreOptions = array(
                 'help' => true,
                 'quiet' => true,
@@ -94,25 +103,28 @@ END
         });
     }
 
+    /**
+     * @inheritDoc
+     */
     protected function execute(InputInterface $input, OutputInterface $output)
     {
         $this->handler = new CompletionHandler($this->getApplication());
         $handler = $this->handler;
+        $shellType = $input->getOption('shell-type') ?: $this->getShellType();
+        $factory = $this->resolveHookFactory($shellType);
 
         if ($input->getOption('generate-hook')) {
             global $argv;
-            $program = $argv[0];
 
-            $factory = new HookFactory();
+            $program = $argv[0];
             $alias = $input->getOption('program');
             $multiple = (bool)$input->getOption('multiple');
 
-            if (!$alias) {
+            if (! $alias) {
                 $alias = basename($program);
             }
 
             $hook = $factory->generateHook(
-                $input->getOption('shell-type') ?: $this->getShellType(),
                 $program,
                 $alias,
                 $multiple
@@ -126,11 +138,11 @@ END
             $results = $this->runCompletion();
 
             // Escape results for the current shell
-            $shellType = $input->getOption('shell-type') ?: $this->getShellType();
-
             foreach ($results as &$result) {
-                $result = $this->escapeForShell($result, $shellType);
+                $result = $factory->escape($result, $this->handler->getContext());
             }
+
+            unset($result);
 
             $output->write($results, true);
         }
@@ -139,51 +151,16 @@ END
     }
 
     /**
-     * Escape each completion result for the specified shell
-     *
-     * @param string $result - Completion results that should appear in the shell
-     * @param string $shellType - Valid shell type from HookFactory
-     * @return string
-     */
-    protected function escapeForShell($result, $shellType)
-    {
-        switch ($shellType) {
-            // BASH requires special escaping for multi-word and special character results
-            // This emulates registering completion with`-o filenames`, without side-effects like dir name slashes
-            case 'bash':
-                $context = $this->handler->getContext();
-                $wordStart = substr($context->getRawCurrentWord(), 0, 1);
-
-                if ($wordStart == "'") {
-                    // If the current word is single-quoted, escape any single quotes in the result
-                    $result = str_replace("'", "\\'", $result);
-                } else if ($wordStart == '"') {
-                    // If the current word is double-quoted, escape any double quotes in the result
-                    $result = str_replace('"', '\\"', $result);
-                } else {
-                    // Otherwise assume the string is unquoted and word breaks should be escaped
-                    $result = preg_replace('/([\s\'"\\\\])/', '\\\\$1', $result);
-                }
-
-                // Escape output to prevent special characters being lost when passing results to compgen
-                return escapeshellarg($result);
-
-            // No transformation by default
-            default:
-                return $result;
-        }
-    }
-
-    /**
      * Run the completion handler and return a filtered list of results
      *
+     * @return string[]
      * @deprecated - This will be removed in 1.0.0 in favour of CompletionCommand::configureCompletion
      *
-     * @return string[]
      */
     protected function runCompletion()
     {
         $this->configureCompletion($this->handler);
+
         return $this->handler->runCompletion();
     }
 
@@ -204,13 +181,16 @@ END
      */
     protected function getShellType()
     {
-        if (!getenv('SHELL')) {
+        if (! getenv('SHELL')) {
             throw new \RuntimeException('Could not read SHELL environment variable. Please specify your shell type using the --shell-type option.');
         }
 
         return basename(getenv('SHELL'));
     }
 
+    /**
+     * @return InputDefinition
+     */
     protected function createDefinition()
     {
         return new InputDefinition(array(
@@ -230,7 +210,7 @@ END
                 'multiple',
                 'm',
                 InputOption::VALUE_NONE,
-                "Generated hook can be used for multiple applications."
+                'Generated hook can be used for multiple applications.'
             ),
             new InputOption(
                 'shell-type',
@@ -239,5 +219,26 @@ END
                 'Set the shell type (zsh or bash). Otherwise this is determined automatically.'
             ),
         ));
+    }
+
+    /**
+     * Resolves the hook factory
+     *
+     * @param string $shellType
+     *
+     * @return HookFactory
+     */
+    private function resolveHookFactory($shellType)
+    {
+        switch ($shellType) {
+            case BashHookFactory::SHELL:
+                return new BashHookFactory();
+
+            case ZshHookFactory::SHELL:
+                return new ZshHookFactory();
+
+            default:
+                throw new \RuntimeException("Cannot generate hook for unknown shell type '$shellType'. Available hooks are: bash, zsh");
+        }
     }
 }

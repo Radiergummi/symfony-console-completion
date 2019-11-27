@@ -3,6 +3,7 @@
 namespace Stecman\Component\Symfony\Console\BashCompletion\Tests;
 
 use PHPUnit\Framework\TestCase;
+use Stecman\Component\Symfony\Console\BashCompletion\HookFactories\BashHookFactory;
 use Stecman\Component\Symfony\Console\BashCompletion\HookFactory;
 
 class HookFactoryTest extends TestCase
@@ -12,18 +13,17 @@ class HookFactoryTest extends TestCase
      */
     protected $factory;
 
-    protected function setUp()
-    {
-        $this->factory = new HookFactory();
-    }
-
     /**
      * @dataProvider generateHookDataProvider
+     *
+     * @param string $programPath
+     * @param string $programName
+     * @param bool   $multiple
      */
     public function testBashSyntax($programPath, $programName, $multiple)
     {
         if ($this->hasProgram('bash')) {
-            $script = $this->factory->generateHook('bash', $programPath, $programName, $multiple);
+            $script = $this->factory->generateHook($programPath, $programName, $multiple);
             $this->assertSyntaxIsValid($script, 'bash -n', 'BASH hook');
         } else {
             $this->markTestSkipped("Couldn't detect BASH program to run hook syntax check");
@@ -32,17 +32,20 @@ class HookFactoryTest extends TestCase
 
     /**
      * @dataProvider generateHookDataProvider
+     *
+     * @param string $programPath
+     * @param string $programName
+     * @param bool   $multiple
      */
     public function testZshSyntax($programPath, $programName, $multiple)
     {
         if ($this->hasProgram('zsh')) {
-            $script = $this->factory->generateHook('zsh', $programPath, $programName, $multiple);
+            $script = $this->factory->generateHook($programPath, $programName, $multiple);
             $this->assertSyntaxIsValid($script, 'zsh -n', 'ZSH hook');
         } else {
             $this->markTestSkipped("Couldn't detect ZSH program to run hook syntax check");
         }
     }
-
     public function generateHookDataProvider()
     {
         return array(
@@ -50,35 +53,63 @@ class HookFactoryTest extends TestCase
             array('/path/to/myprogram', null, true),
             array('/path/to/myprogram', 'myprogram', false),
             array('/path/to/myprogram', 'myprogram', true),
-            array('/path/to/my-program', 'my-program', false)
+            array('/path/to/my-program', 'my-program', false),
         );
     }
 
-    public function testForMissingSemiColons()
+    public function testForMissingSemiColonsInBashScript()
     {
-        $class = new \ReflectionClass('Stecman\Component\Symfony\Console\BashCompletion\HookFactory');
-        $properties = $class->getStaticProperties();
-        $hooks = $properties['hooks'];
+        $hook = new BashHookFactory();
 
         // Check each line is commented or closed correctly to be collapsed for eval
-        foreach ($hooks as $shellType => $hook) {
-            $line = strtok($hook, "\n");
-            $lineNumber = 0;
+        $line = strtok($hook->getScript(), "\n");
+        $lineNumber = 0;
 
-            while ($line !== false) {
-                $lineNumber++;
+        while ($line !== false) {
+            $lineNumber++;
 
-                if (!$this->isScriptLineValid($line)) {
-                    $this->fail("$shellType hook appears to be missing a semicolon on line $lineNumber:\n> $line");
-                }
-
-                $line = strtok("\n");
+            if (! $this->isScriptLineValid($line)) {
+                $this->fail("Bash hook appears to be missing a semicolon on line $lineNumber:\n> $line");
             }
+
+            $line = strtok("\n");
         }
+
+        $this->assertTrue(true);
+    }
+
+    public function testForMissingSemiColonsInZshScript()
+    {
+        $hook = new BashHookFactory();
+
+        // Check each line is commented or closed correctly to be collapsed for eval
+        $line = strtok($hook->getScript(), "\n");
+        $lineNumber = 0;
+
+        while ($line !== false) {
+            $lineNumber++;
+
+            if (! $this->isScriptLineValid($line)) {
+                $this->fail("Bash hook appears to be missing a semicolon on line $lineNumber:\n> $line");
+            }
+
+            $line = strtok("\n");
+        }
+
+        $this->assertTrue(true);
+    }
+
+    protected function setUp()
+    {
+        $this->factory = new BashHookFactory();
     }
 
     /**
      * Check if a line of shell script is safe to be collapsed to one line for eval
+     *
+     * @param string $line
+     *
+     * @return bool
      */
     protected function isScriptLineValid($line)
     {
@@ -87,18 +118,16 @@ class HookFactoryTest extends TestCase
             return true;
         }
 
-        if (preg_match('/[;\{\}]\s*$/', $line)) {
+        if (preg_match('/[;{}]\s*$/', $line)) {
             // Line correctly ends with a semicolon or syntax
             return true;
         }
 
-        if (preg_match('
-                    /(
+        if (preg_match('/(
                         ;\s*then |
                         \s*else
                     )
-                    \s*$
-                    /x', $line)
+                    \s*$/x', $line)
         ) {
             // Line ends with another permitted sequence
             return true;
@@ -118,9 +147,9 @@ class HookFactoryTest extends TestCase
     }
 
     /**
-     * @param string $code - code to pipe to the syntax checking command
+     * @param string $code               - code to pipe to the syntax checking command
      * @param string $syntaxCheckCommand - equivalent to `bash -n`.
-     * @param string $context - what the syntax check is for
+     * @param string $context            - what the syntax check is for
      */
     protected function assertSyntaxIsValid($code, $syntaxCheckCommand, $context)
     {
@@ -129,7 +158,7 @@ class HookFactoryTest extends TestCase
             array(
                 0 => array('pipe', 'r'),
                 1 => array('pipe', 'w'),
-                2 => array('pipe', 'w')
+                2 => array('pipe', 'w'),
             ),
             $pipes
         );

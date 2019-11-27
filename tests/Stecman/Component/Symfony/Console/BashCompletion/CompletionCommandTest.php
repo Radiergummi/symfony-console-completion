@@ -16,6 +16,7 @@ class CompletionCommandTest extends TestCase
      */
     public function testConflictingGlobalOptions()
     {
+        $this->doesNotPerformAssertions();
         $app = new Application('Base application');
 
         // Conflicting option shortcut
@@ -37,5 +38,7 @@ class CompletionCommandTest extends TestCase
 
         // Check default options are available
         $app->doRun(new StringInput('_completion -V -vv --no-ansi --quiet'), new NullOutput());
+
+        $this->assertTrue(true);
     }
 }

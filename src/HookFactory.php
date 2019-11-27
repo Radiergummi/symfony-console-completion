@@ -1,9 +1,8 @@
 <?php
 
-
 namespace Stecman\Component\Symfony\Console\BashCompletion;
 
-final class HookFactory
+abstract class HookFactory
 {
     /**
      * Hook scripts
@@ -25,135 +24,25 @@ final class HookFactory
      *
      * @var array
      */
-    protected static $hooks = array(
-        // BASH Hook
-        'bash' => <<<'END'
-# BASH completion for %%program_path%%
-function %%function_name%% {
-
-    # Copy BASH's completion variables to the ones the completion command expects
-    # These line up exactly as the library was originally designed for BASH
-    local CMDLINE_CONTENTS="$COMP_LINE";
-    local CMDLINE_CURSOR_INDEX="$COMP_POINT";
-    local CMDLINE_WORDBREAKS="$COMP_WORDBREAKS";
-
-    export CMDLINE_CONTENTS CMDLINE_CURSOR_INDEX CMDLINE_WORDBREAKS;
-
-    local RESULT STATUS;
-
-    # Force splitting by newline instead of default delimiters
-    local IFS=$'\n';
-
-    RESULT="$(%%completion_command%% </dev/null)";
-    STATUS=$?;
-
-    local cur mail_check_backup;
-
-    mail_check_backup=$MAILCHECK;
-    MAILCHECK=-1;
-
-    _get_comp_words_by_ref -n : cur;
-
-    # Check if shell provided path completion is requested
-    # @see Completion\ShellPathCompletion
-    if [ $STATUS -eq 200 ]; then
-        # Turn file/dir completion on temporarily and give control back to BASH
-        compopt -o default;
-        return 0;
-
-    # Bail out if PHP didn't exit cleanly
-    elif [ $STATUS -ne 0 ]; then
-        echo -e "$RESULT";
-        return $?;
-    fi;
-
-    COMPREPLY=(`compgen -W "$RESULT" -- $cur`);
-
-    __ltrim_colon_completions "$cur";
-
-    MAILCHECK=mail_check_backup;
-};
-
-if [ "$(type -t _get_comp_words_by_ref)" == "function" ]; then
-    complete -F %%function_name%% "%%program_name%%";
-else
-    >&2 echo "Completion was not registered for %%program_name%%:";
-    >&2 echo "The 'bash-completion' package is required but doesn't appear to be installed.";
-fi;
-END
-
-        // ZSH Hook
-        , 'zsh' => <<<'END'
-# ZSH completion for %%program_path%%
-function %%function_name%% {
-    local -x CMDLINE_CONTENTS="$words";
-    local -x CMDLINE_CURSOR_INDEX;
-    (( CMDLINE_CURSOR_INDEX = ${#${(j. .)words[1,CURRENT]}} ));
-
-    local RESULT STATUS;
-    RESULT=("${(@f)$( %%completion_command%% )}");
-    STATUS=$?;
-
-    # Check if shell provided path completion is requested
-    # @see Completion\ShellPathCompletion
-    if [ $STATUS -eq 200 ]; then
-        _path_files;
-        return 0;
-
-    # Bail out if PHP didn't exit cleanly
-    elif [ $STATUS -ne 0 ]; then
-        echo -e "$RESULT";
-        return $?;
-    fi;
-
-    compadd -- $RESULT;
-};
-
-compdef %%function_name%% "%%program_name%%";
-END
-    );
-
-    /**
-     * Return the names of shells that have hooks
-     *
-     * @return string[]
-     */
-    public static function getShellTypes()
-    {
-        return array_keys(self::$hooks);
-    }
 
     /**
      * Return a completion hook for the specified shell type
      *
-     * @param string $type - a key from self::$hooks
      * @param string $programPath
      * @param string $programName
      * @param bool   $multiple
      *
      * @return string
      */
-    public function generateHook($type, $programPath, $programName = null, $multiple = false)
+    public function generateHook($programPath, $programName = null, $multiple = false)
     {
-        if (!isset(self::$hooks[$type])) {
-            throw new \RuntimeException(sprintf(
-                "Cannot generate hook for unknown shell type '%s'. Available hooks are: %s",
-                $type,
-                implode(', ', self::getShellTypes())
-            ));
-        }
-
         // Use the program path if an alias/name is not given
         $programName = $programName ?: $programPath;
 
-        if ($multiple) {
-            $completionCommand = '$1 _completion';
-        } else {
-            $completionCommand = $programPath . ' _completion';
-        }
+        $completionCommand = $multiple ? '$1 _completion' : $programPath . ' _completion';
 
         // Pass shell type during completion so output can be encoded if the shell requires it
-        $completionCommand .= " --shell-type $type";
+        $completionCommand .= " --shell-type {$this->getShell()}";
 
         return str_replace(
             array(
@@ -166,14 +55,46 @@ END
                 $this->generateFunctionName($programPath, $programName),
                 $programName,
                 $programPath,
-                $completionCommand
+                $completionCommand,
             ),
-            $this->stripComments(self::$hooks[$type])
+            $this->getScript()
         );
     }
 
     /**
+     * Escape each completion result for the specified shell. No transformation by default.
+     *
+     * @param string            $result  Completion results that should appear in the shell
+     * @param CompletionContext $context Completion context
+     *
+     * @return string
+     */
+    public function escape($result, $context)
+    {
+        return $result;
+    }
+
+    /**
+     * Retrieves the shell type
+     *
+     * @return mixed
+     */
+    abstract public function getShell();
+
+    /**
+     * Retrieves the script
+     *
+     * @return string
+     */
+    abstract public function getScript();
+
+    /**
      * Generate a function name that is unlikely to conflict with other generated function names in the same shell
+     *
+     * @param string $programPath
+     * @param string $programName
+     *
+     * @return string
      */
     protected function generateFunctionName($programPath, $programName)
     {
@@ -184,17 +105,18 @@ END
         );
     }
 
-
     /**
      * Make a string safe for use as a shell function name
      *
      * @param string $name
+     *
      * @return string
      */
     protected function sanitiseForFunctionName($name)
     {
         $name = str_replace('-', '_', $name);
-        return preg_replace('/[^A-Za-z0-9_]+/', '', $name);
+
+        return preg_replace('/\W+/', '', $name);
     }
 
     /**
@@ -205,10 +127,11 @@ END
      * hook into a shell, so while it would be nice to render comments, this stripping is required for now.
      *
      * @param string $script
+     *
      * @return string
      */
     protected function stripComments($script)
     {
-        return preg_replace('/(^\s*\#.*$)/m', '', $script);
+        return preg_replace('/(^\s*#.*$)/m', '', $script);
     }
 }
