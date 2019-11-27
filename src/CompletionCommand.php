@@ -237,6 +237,9 @@ END
             case ZshHookFactory::SHELL:
                 return new ZshHookFactory();
 
+                case FishHookFactory::SHELL:
+                return new FishHookFactory();
+
             default:
                 throw new \RuntimeException("Cannot generate hook for unknown shell type '$shellType'. Available hooks are: bash, zsh");
         }
